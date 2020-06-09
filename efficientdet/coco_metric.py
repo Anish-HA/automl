@@ -131,6 +131,9 @@ class EvaluationMetric(object):
       else:
         # Run on validation dataset.
         detections = np.array(self.detections)
+
+        # detections = detections[detections[:, 5] >= 0.4]
+
         image_ids = list(set(detections[:, 0]))
         coco_dt = self.coco_gt.loadRes(detections)
         coco_eval = COCOeval(self.coco_gt, coco_dt, iouType='bbox')
@@ -138,6 +141,8 @@ class EvaluationMetric(object):
         coco_eval.evaluate()
         coco_eval.accumulate()
         coco_eval.summarize()
+        print("=========Per class results=========")
+        coco_eval.summarize_per_category()
         coco_metrics = coco_eval.stats
         # clean self.detections after evaluation is done.
         # this makes sure the next evaluation will start with an empty list of
@@ -191,8 +196,9 @@ class EvaluationMetric(object):
           category_id = data[6]
           if category_id < 0:
             break
-          if area == -1:
-            area = (box[3] - box[1]) * (box[2] - box[0])
+          # if area == -1:
+          area = (box[3] - box[1]) * (box[2] - box[0])
+          
           self.dataset['annotations'].append({
               'id': int(self.annotation_id),
               'image_id': int(image_id),

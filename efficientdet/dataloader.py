@@ -242,7 +242,7 @@ class InputReader(object):
     self._is_training = is_training
     self._use_fake_data = use_fake_data
     # COCO has 100 limit, but users may set different values for custom dataset.
-    self._max_instances_per_image = max_instances_per_image or 100
+    self._max_instances_per_image = max_instances_per_image or 3000
 
   def __call__(self, params):
     input_anchors = anchors.Anchors(params['min_level'], params['max_level'],

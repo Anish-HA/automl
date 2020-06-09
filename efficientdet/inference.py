@@ -533,12 +533,16 @@ class ServingDriver(object):
         max_boxes_to_draw or anchors.MAX_DETECTIONS_PER_IMAGE)
     self.line_thickness = line_thickness
 
+    # Estimator code - Anish
+    self.estimator  = None
+
   def __del__(self):
     if self.sess:
       self.sess.close()
 
   def _build_session(self):
     sess_config = tf.ConfigProto()
+    sess_config.gpu_options.allow_growth = True
     if self.use_xla:
       sess_config.graph_options.optimizer_options.global_jit_level = (
           tf.OptimizerOptions.ON_2)
@@ -552,6 +556,11 @@ class ServingDriver(object):
 
     if not self.sess:
       self.sess = self._build_session()
+    
+    # Estimator code - Anish
+    if not self.estimator:
+      self.estimator = self.build_estimator()
+
     with self.sess.graph.as_default():
       image_files = tf.placeholder(tf.string, name='image_files', shape=[None])
       raw_images = batch_image_files_decode(image_files)
@@ -645,6 +654,128 @@ class ServingDriver(object):
         trace = timeline.Timeline(step_stats=run_metadata.step_stats)
         trace_file.write(trace.generate_chrome_trace_format(show_memory=True))
 
+  def build_estimator(self, params_override=None):
+    """Build model and restore checkpoints."""
+    # Estimator code - Anish
+    def model_fn(features, labels, params, mode):
+      import efficientdet_arch
+      model = efficientdet_arch.efficientdet
+      # Convert params (dict) to Config for easier access.
+      training_hooks = None
+      if params['data_format'] == 'channels_first':
+        features = tf.transpose(features, [0, 3, 1, 2])
+      def _model_outputs(inputs):
+        return model(inputs, config=hparams_config.Config(params))
+
+      cls_outputs, box_outputs = utils.build_model_with_precision(
+          params['precision'], _model_outputs, features)
+
+      levels = cls_outputs.keys()
+      for level in levels:
+        cls_outputs[level] = tf.cast(cls_outputs[level], tf.float32)
+        box_outputs[level] = tf.cast(box_outputs[level], tf.float32)
+
+      # First check if it is in PREDICT mode.
+      if mode == tf.estimator.ModeKeys.PREDICT:
+        predictions = {
+            'image': features,
+        }
+        for level in levels:
+          predictions['cls_outputs_%d' % level] = cls_outputs[level]
+          predictions['box_outputs_%d' % level] = box_outputs[level]
+
+        raw_images = features
+        images, scales = batch_image_preprocess(raw_images, params['image_size'],
+                                                self.batch_size)
+        params.update(
+            dict(batch_size=self.batch_size, disable_pyfun=self.disable_pyfun))
+        dets = det_post_process(params, cls_outputs, box_outputs, scales,
+                                      self.min_score_thresh,
+                                      self.max_boxes_to_draw)
+        predictions['dets'] = dets
+
+        return tf.estimator.EstimatorSpec(mode=mode, predictions=predictions)
+
+    params = copy.deepcopy(self.params)
+    if params_override:
+      params.update(params_override)
+
+    # Taken from main.py
+    params = dict(
+      params,
+      use_tpu=False,
+      input_rand_hflip=False,
+      is_training_bn=False,
+      precision=None,
+    )
+
+    config_proto = tf.ConfigProto(
+      allow_soft_placement=True, log_device_placement=False)
+    config_proto.gpu_options.allow_growth = True
+
+    tpu_config = tf.estimator.tpu.TPUConfig(
+      100,
+      num_shards=8,
+      num_cores_per_replica=None,
+      input_partition_dims=None,
+      per_host_input_for_training=tf.estimator.tpu.InputPipelineConfig.PER_HOST_V2
+    )
+
+    run_config = tf.estimator.tpu.RunConfig(
+      cluster=None,
+      evaluation_master='',
+      model_dir=self.ckpt_path,
+      log_step_count_steps=100,
+      session_config=config_proto,
+      tpu_config=tpu_config,
+      tf_random_seed=None,
+    )
+
+    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(
+      model_fn=model_fn,
+      use_tpu=False,
+      train_batch_size=64,
+      eval_batch_size=1,
+      predict_batch_size=1,
+      config=run_config,
+      params=params
+    )
+
+    self.estimator = estimator
+    return estimator
+
+  def serve_images_estimator(self, batch_files):
+    """Serve a list of image arrays.
+
+    Args:
+      batch_files: A list of image files
+
+    Returns:
+      A list of detections.
+    """
+    # Estimator code - Anish
+    params = copy.deepcopy(self.params)    
+    print("==============\n==============\nhello\n==============\n==============\n")
+
+    if not self.estimator:
+      self.build_estimator()
+    print("==============\n==============\ngoodbye\n==============\n==============\n")
+    
+    predictions = self.estimator.predict(
+      input_fn=dataloader.InputReader("/home/anish-ha/Documents/obj-det/workspace/dets/models/v1.1_all/data/tfrecord_9-class_w-ids/test/test-*",
+                                      is_training=False)
+      )
+
+    detections = []
+    print("==============\n==============\nhere\n==============\n==============\n")
+
+    for pred in predictions:
+      detections.append(pred['dets'])
+    
+    print("==============\n==============\nthere\n==============\n==============\n")
+    
+    return detections
+
   def serve_images(self, image_arrays):
     """Serve a list of image arrays.
 
@@ -661,6 +792,7 @@ class ServingDriver(object):
         self.signitures['prediction'],
         feed_dict={self.signitures['image_arrays']: image_arrays})
     return predictions
+
 
   def load(self, saved_model_dir_or_frozen_graph: Text):
     """Load the model using saved model or a frozen graph."""
@@ -800,7 +932,9 @@ class InferenceDriver(object):
       Annotated image.
     """
     params = copy.deepcopy(self.params)
-    with tf.Session() as sess:
+    sess_config = tf.ConfigProto()
+    sess_config.gpu_options.allow_growth = True
+    with tf.Session(config=sess_config) as sess:
       # Buid inputs and preprocessing.
       raw_images, images, scales = build_inputs(image_path_pattern,
                                                 params['image_size'])

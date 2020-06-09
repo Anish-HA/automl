@@ -176,13 +176,29 @@ class ModelInspector(object):
         padding_size = batch_size - size_before_pad
         raw_images += [np.zeros_like(raw_images[0])] * padding_size
 
-      detections_bs = driver.serve_images(raw_images)
+      detections_bs = driver.serve_images_estimator(batch_files)
       for j in range(size_before_pad):
+
+        if not os.path.exists(output_dir):
+                os.mkdir(output_dir + "/")
+        if not os.path.exists(output_dir + "/detections/"):
+                os.mkdir(output_dir + "/detections/")
+        if not os.path.exists(output_dir + "/out/"):
+                os.mkdir(output_dir + "/out/")
+
         img = driver.visualize(raw_images[j], detections_bs[j], **kwargs)
         img_id = str(i * batch_size + j)
-        output_image_path = os.path.join(output_dir, img_id + '.jpg')
+        output_image_path = os.path.join(output_dir + "/out", os.path.splitext(os.path.basename(batch_files[0]))[0] + '.jpg')
         Image.fromarray(img).save(output_image_path)
         logging.info('writing file to %s', output_image_path)
+        
+        output_detection_path = os.path.join(output_dir, "detections/" + os.path.splitext(os.path.basename(batch_files[0]))[0] + ".txt")
+        with open(output_detection_path, "w") as detection_file:
+          for d in detections_bs[0]:
+            d_string = str(d[2]) + " " + str(d[4]) + " " + str(d[1]) + " " + str(d[3]) + " " + str(d[6]) + " " + str(d[5])
+            detection_file.write(d_string + "\n")
+          detection_file.close()
+        # print(output_detection_path)
 
   def saved_model_benchmark(self,
                             image_path_pattern,
@@ -254,7 +270,9 @@ class ModelInspector(object):
 
   def build_and_save_model(self):
     """build and save the model into self.logdir."""
-    with tf.Graph().as_default(), tf.Session() as sess:
+    sess_config = tf.ConfigProto()
+    sess_config.gpu_options.allow_growth = True
+    with tf.Graph().as_default(), tf.Session(config=sess_config) as sess:
       # Build model with inputs and labels.
       inputs = tf.placeholder(tf.float32, name='input', shape=self.inputs_shape)
       outputs = self.build_model(inputs)
@@ -283,7 +301,9 @@ class ModelInspector(object):
 
   def eval_ckpt(self):
     """build and save the model into self.logdir."""
-    with tf.Graph().as_default(), tf.Session() as sess:
+    sess_config = tf.ConfigProto()
+    sess_config.gpu_options.allow_growth = True
+    with tf.Graph().as_default(), tf.Session(config=sess_config) as sess:
       # Build model with inputs and labels.
       inputs = tf.placeholder(tf.float32, name='input', shape=self.inputs_shape)
       self.build_model(inputs)
@@ -293,7 +313,9 @@ class ModelInspector(object):
 
   def freeze_model(self) -> Tuple[Text, Text]:
     """Freeze model and convert them into tflite and tf graph."""
-    with tf.Graph().as_default(), tf.Session() as sess:
+    sess_config = tf.ConfigProto()
+    sess_config.gpu_options.allow_growth = True
+    with tf.Graph().as_default(), tf.Session(config=sess_config) as sess:
       inputs = tf.placeholder(tf.float32, name='input', shape=self.inputs_shape)
       outputs = self.build_model(inputs)
 
@@ -334,8 +356,10 @@ class ModelInspector(object):
       sess_config = tf.ConfigProto(
           intra_op_parallelism_threads=num_threads,
           inter_op_parallelism_threads=1)
+      sess_config.gpu_options.allow_growth = True
     else:
       sess_config = tf.ConfigProto()
+      sess_config.gpu_options.allow_growth = True
 
     # rewriter_config_pb2.RewriterConfig.OFF
     sess_config.graph_options.rewrite_options.dependency_optimization = 2
