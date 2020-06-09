@@ -668,7 +668,8 @@ class ServingDriver(object):
         return model(inputs, config=hparams_config.Config(params))
 
       cls_outputs, box_outputs = utils.build_model_with_precision(
-          params['precision'], _model_outputs, features)
+        params['precision'], _model_outputs, features, params['is_training_bn'])
+
 
       levels = cls_outputs.keys()
       for level in levels:

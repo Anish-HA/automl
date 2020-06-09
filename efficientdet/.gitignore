@@ -1,0 +1,16 @@
+.ipynb_checkpoints/
+VOCdevkit/
+VOCtrainval_11-May-2012.tar
+annotations/
+efficientdet-d0.tar.gz
+efficientdet-d0/
+efficientdet-d1.tar.gz
+efficientdet-d1/
+efficientnet-b1.tar.gz
+efficientnet-b1/
+image_info_test2017.zip
+img.png
+test2017.zip
+testdev_output/
+tfrecord/
+val2017/
