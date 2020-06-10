@@ -176,7 +176,7 @@ class ModelInspector(object):
         padding_size = batch_size - size_before_pad
         raw_images += [np.zeros_like(raw_images[0])] * padding_size
 
-      detections_bs = driver.serve_images_estimator(batch_files)
+      detections_bs = driver.serve_images(raw_images)
       for j in range(size_before_pad):
 
         if not os.path.exists(output_dir):
@@ -188,13 +188,66 @@ class ModelInspector(object):
 
         img = driver.visualize(raw_images[j], detections_bs[j], **kwargs)
         img_id = str(i * batch_size + j)
-        output_image_path = os.path.join(output_dir + "/out", os.path.splitext(os.path.basename(batch_files[0]))[0] + '.jpg')
+        output_image_path = os.path.join(output_dir + "/out", os.path.splitext(os.path.basename(batch_files[j]))[0] + '.jpg')
         Image.fromarray(img).save(output_image_path)
         logging.info('writing file to %s', output_image_path)
         
-        output_detection_path = os.path.join(output_dir, "detections/" + os.path.splitext(os.path.basename(batch_files[0]))[0] + ".txt")
+        output_detection_path = os.path.join(output_dir, "detections/" + os.path.splitext(os.path.basename(batch_files[j]))[0] + ".txt")
         with open(output_detection_path, "w") as detection_file:
-          for d in detections_bs[0]:
+          for d in detections_bs[j]:
+            d_string = str(d[2]) + " " + str(d[4]) + " " + str(d[1]) + " " + str(d[3]) + " " + str(d[6]) + " " + str(d[5])
+            detection_file.write(d_string + "\n")
+          detection_file.close()
+        # print(output_detection_path)
+  
+  def saved_model_inference_estimator(self, image_path_pattern, output_dir, **kwargs):
+    """Perform inference for the given saved model."""
+    driver = inference.ServingDriver(
+        self.model_name,
+        self.ckpt_path,
+        batch_size=self.batch_size,
+        use_xla=self.use_xla,
+        model_params=self.model_config.as_dict(),
+        **kwargs)
+
+    # batch_size always 1
+    batch_size = 1
+    all_files = list(tf.io.gfile.glob(image_path_pattern))
+    print('all_files=', all_files)
+    num_batches = (len(all_files) + batch_size - 1) // batch_size
+
+    for i in range(num_batches):
+      batch_files = all_files[i * batch_size:(i + 1) * batch_size]
+      height, width = self.model_config.image_size
+      images = [Image.open(f) for f in batch_files]
+      if len(set([m.size for m in images])) > 1:
+        # Resize only if images in the same batch have different sizes.
+        images = [m.resize(height, width) for m in images]
+      raw_images = [np.array(m) for m in images]
+      size_before_pad = len(raw_images)
+      if size_before_pad < batch_size:
+        padding_size = batch_size - size_before_pad
+        raw_images += [np.zeros_like(raw_images[0])] * padding_size
+
+      detections_bs = driver.serve_images_estimator(raw_images[0], batch_files[0])
+      for j in range(size_before_pad):
+
+        if not os.path.exists(output_dir):
+                os.mkdir(output_dir + "/")
+        if not os.path.exists(output_dir + "/detections/"):
+                os.mkdir(output_dir + "/detections/")
+        if not os.path.exists(output_dir + "/out/"):
+                os.mkdir(output_dir + "/out/")
+
+        img = driver.visualize(raw_images[j], detections_bs[j], **kwargs)
+        img_id = str(i * batch_size + j)
+        output_image_path = os.path.join(output_dir + "/out", os.path.splitext(os.path.basename(batch_files[j]))[0] + '.jpg')
+        Image.fromarray(img).save(output_image_path)
+        logging.info('writing file to %s', output_image_path)
+        
+        output_detection_path = os.path.join(output_dir, "detections/" + os.path.splitext(os.path.basename(batch_files[j]))[0] + ".txt")
+        with open(output_detection_path, "w") as detection_file:
+          for d in detections_bs[j]:
             d_string = str(d[2]) + " " + str(d[4]) + " " + str(d[1]) + " " + str(d[3]) + " " + str(d[6]) + " " + str(d[5])
             detection_file.write(d_string + "\n")
           detection_file.close()
@@ -448,7 +501,7 @@ class ModelInspector(object):
           kwargs['input_image'],
           trace_filename=kwargs.get('trace_filename', None))
     elif runmode in ('infer', 'saved_model', 'saved_model_infer',
-                     'saved_model_video'):
+                     'saved_model_video', 'saved_model_infer_estimator'):
       config_dict = {}
       if kwargs.get('line_thickness', None):
         config_dict['line_thickness'] = kwargs.get('line_thickness')
@@ -464,6 +517,9 @@ class ModelInspector(object):
                                     kwargs['output_image_dir'], **config_dict)
       elif runmode == 'saved_model_infer':
         self.saved_model_inference(kwargs['input_image'],
+                                   kwargs['output_image_dir'], **config_dict)
+      elif runmode == 'saved_model_infer_estimator':
+        self.saved_model_inference_estimator(kwargs['input_image'],
                                    kwargs['output_image_dir'], **config_dict)
       elif runmode == 'saved_model_video':
         self.saved_model_video(kwargs['input_video'], kwargs['output_video'],

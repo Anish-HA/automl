@@ -660,6 +660,7 @@ class ServingDriver(object):
     def model_fn(features, labels, params, mode):
       import efficientdet_arch
       model = efficientdet_arch.efficientdet
+      
       # Convert params (dict) to Config for easier access.
       training_hooks = None
       if params['data_format'] == 'channels_first':
@@ -745,36 +746,49 @@ class ServingDriver(object):
     self.estimator = estimator
     return estimator
 
-  def serve_images_estimator(self, batch_files):
-    """Serve a list of image arrays.
-
-    Args:
-      batch_files: A list of image files
-
-    Returns:
-      A list of detections.
-    """
+  def serve_images_estimator(self, raw_image, file_path):
     # Estimator code - Anish
-    params = copy.deepcopy(self.params)    
-    print("==============\n==============\nhello\n==============\n==============\n")
-
+    params = copy.deepcopy(self.params)
     if not self.estimator:
       self.build_estimator()
-    print("==============\n==============\ngoodbye\n==============\n==============\n")
+
     
+    def predict_input_fn(params):
+      img_shape = np.asarray(raw_image).shape
+
+      def resize_img(img):
+        input_processor = dataloader.DetectionInputProcessor(img, params['image_size'])
+        input_processor.normalize_image()
+        input_processor.set_scale_factors_to_output_size()
+        image = input_processor.resize_and_crop_image()
+
+        return image
+
+      dataset = tf.data.Dataset.from_tensor_slices([file_path])
+      dataset = dataset.repeat()
+      dataset = dataset.map(lambda path: tf.io.decode_image(tf.io.read_file(path), channels=3, dtype=tf.dtypes.uint8))
+      dataset = dataset.map(lambda img: tf.reshape(img, list(img_shape)))
+      dataset = dataset.map(resize_img)
+
+      dataset = dataset.batch(batch_size=self.batch_size, drop_remainder=True)
+
+      return dataset
+    
+
     predictions = self.estimator.predict(
-      input_fn=dataloader.InputReader("/home/anish-ha/Documents/obj-det/workspace/dets/models/v1.1_all/data/tfrecord_9-class_w-ids/test/test-*",
-                                      is_training=False)
-      )
+      input_fn=predict_input_fn
+    )
 
     detections = []
-    print("==============\n==============\nhere\n==============\n==============\n")
 
+    i = 0
     for pred in predictions:
+      if i >= self.max_boxes_to_draw:
+        break
       detections.append(pred['dets'])
-    
-    print("==============\n==============\nthere\n==============\n==============\n")
-    
+      i += 1
+    print(len(detections))
+    print(len(set(np.unique(detections))))
     return detections
 
   def serve_images(self, image_arrays):
