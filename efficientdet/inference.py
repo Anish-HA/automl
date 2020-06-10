@@ -746,7 +746,7 @@ class ServingDriver(object):
     self.estimator = estimator
     return estimator
 
-  def serve_images_estimator(self, raw_image, file_path):
+  def serve_images_estimator(self, raw_images, file_paths):
     # Estimator code - Anish
     params = copy.deepcopy(self.params)
     if not self.estimator:
@@ -754,7 +754,9 @@ class ServingDriver(object):
 
     
     def predict_input_fn(params):
-      img_shape = np.asarray(raw_image).shape
+      def convert_to_img(path):
+        img = tf.io.decode_jpeg(tf.io.read_file(path), channels=3)
+        return img 
 
       def resize_img(img):
         input_processor = dataloader.DetectionInputProcessor(img, params['image_size'])
@@ -764,10 +766,9 @@ class ServingDriver(object):
 
         return image
 
-      dataset = tf.data.Dataset.from_tensor_slices([file_path])
-      dataset = dataset.repeat()
-      dataset = dataset.map(lambda path: tf.io.decode_image(tf.io.read_file(path), channels=3, dtype=tf.dtypes.uint8))
-      dataset = dataset.map(lambda img: tf.reshape(img, list(img_shape)))
+      dataset = tf.data.Dataset.from_tensor_slices(file_paths)
+      dataset = dataset.repeat(1)
+      dataset = dataset.map(convert_to_img)
       dataset = dataset.map(resize_img)
 
       dataset = dataset.batch(batch_size=self.batch_size, drop_remainder=True)
@@ -781,14 +782,8 @@ class ServingDriver(object):
 
     detections = []
 
-    i = 0
     for pred in predictions:
-      if i >= self.max_boxes_to_draw:
-        break
       detections.append(pred['dets'])
-      i += 1
-    print(len(detections))
-    print(len(set(np.unique(detections))))
     return detections
 
   def serve_images(self, image_arrays):
