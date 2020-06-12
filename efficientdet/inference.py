@@ -300,8 +300,7 @@ def det_post_process(params: Dict[Any, Any], cls_outputs: Dict[int, tf.Tensor],
       'indices_all': [None],
       'classes_all': [None]
   }
-  det_model_fn.add_metric_fn_inputs(params, cls_outputs, box_outputs, outputs,
-                                    -1)
+  det_model_fn.add_metric_fn_inputs(params, cls_outputs, box_outputs, outputs)
 
   # Create anchor_label for picking top-k predictions.
   eval_anchors = anchors.Anchors(params['min_level'], params['max_level'],
@@ -748,6 +747,13 @@ class ServingDriver(object):
 
   def serve_images_estimator(self, raw_images, file_paths):
     # Estimator code - Anish
+    
+    # Boolean disable_pyfun must be false to get correct predictions, generate_detections in anchors.py 
+    # has two methods to get detections, one of which is fast but produces wrong outputs, the 
+    # other is slower but produces consistent results like in main.py.
+    # Cannot be set in __init__ as the other inference method will not work if disable_pyfun is False by
+    # default
+    self.disable_pyfun = False
     params = copy.deepcopy(self.params)
     if not self.estimator:
       self.build_estimator()
@@ -784,6 +790,37 @@ class ServingDriver(object):
 
     for pred in predictions:
       detections.append(pred['dets'])
+
+    # Convert from [xmin, ymin, width, height] to [ymin, xmin, ymax, xmax]    
+    # for img_dets in detections:
+    #   for det in img_dets:
+    #     xmin = det[1]
+    #     ymin = det[2]
+    #     width = det[3]
+    #     height = det[4]
+    #     det[1] = ymin
+    #     det[2] = xmin
+    #     det[3] = ymin + height
+    #     det[4] = xmin + width
+
+    assert len(detections) == len(file_paths)
+    image_size = utils.parse_image_size(params['image_size'])
+
+    i = True
+    # Rescale bounding boxes to original image size
+    for img, dets in zip(raw_images, detections):
+      height, width, _ = np.asarray(img).shape
+      height_scale = height / image_size[0]
+      width_scale = width / image_size[1]
+      scale = max(height_scale, width_scale)
+      for det in dets:
+        det[3] = det[3] + det[1]
+        det[4] = det[4] + det[2]
+        det[1] = det[1] * scale
+        det[2] = det[2] * scale
+        det[3] = det[3] * scale
+        det[4] = det[4] * scale
+
     return detections
 
   def serve_images(self, image_arrays):

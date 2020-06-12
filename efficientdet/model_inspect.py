@@ -211,7 +211,7 @@ class ModelInspector(object):
         **kwargs)
 
     # Splits required for memory issues (i.e. how many images processed in one go)
-    split_size = 200
+    split_size = 500
     all_files = list(tf.io.gfile.glob(image_path_pattern))
     print('all_files=', all_files)
     num_splits = (len(all_files) + split_size - 1) // split_size
@@ -233,19 +233,18 @@ class ModelInspector(object):
         if not os.path.exists(output_dir + "/out/"):
                 os.mkdir(output_dir + "/out/")
 
+        output_detection_path = os.path.join(output_dir, "detections/" + os.path.splitext(os.path.basename(batch_files[j]))[0] + ".txt")
+        with open(output_detection_path, "w") as detection_file:
+          for d in detections_bs[j]:
+            d_string = str(d[1]) + " " + str(d[3]) + " " + str(d[2]) + " " + str(d[4]) + " " + str(d[6]) + " " + str(d[5])
+            detection_file.write(d_string + "\n")
+          detection_file.close()
+        
         img = driver.visualize(raw_images[j], detections_bs[j], **kwargs)
         img_id = str(i * split_size + j)
         output_image_path = os.path.join(output_dir + "/out", os.path.splitext(os.path.basename(batch_files[j]))[0] + '.jpg')
         Image.fromarray(img).save(output_image_path)
         logging.info('writing file to %s', output_image_path)
-        
-        output_detection_path = os.path.join(output_dir, "detections/" + os.path.splitext(os.path.basename(batch_files[j]))[0] + ".txt")
-        with open(output_detection_path, "w") as detection_file:
-          for d in detections_bs[j]:
-            d_string = str(d[2]) + " " + str(d[4]) + " " + str(d[1]) + " " + str(d[3]) + " " + str(d[6]) + " " + str(d[5])
-            detection_file.write(d_string + "\n")
-          detection_file.close()
-        # print(output_detection_path)
 
   def saved_model_benchmark(self,
                             image_path_pattern,
