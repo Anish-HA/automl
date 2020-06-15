@@ -233,9 +233,19 @@ class ModelInspector(object):
         if not os.path.exists(output_dir + "/out/"):
                 os.mkdir(output_dir + "/out/")
 
+        min_score_thresh = 0
+        if kwargs.get('min_score_thresh', None):
+          min_score_thresh = kwargs.get('min_score_thresh')
+
+        detections_to_write = []
+        # Collect detections with score higher than min_score_thresh
+        for det in detections_bs[j]:
+          if det[5] > min_score_thresh:
+            detections_to_write.append(det)
+
         output_detection_path = os.path.join(output_dir, "detections/" + os.path.splitext(os.path.basename(batch_files[j]))[0] + ".txt")
         with open(output_detection_path, "w") as detection_file:
-          for d in detections_bs[j]:
+          for d in detections_to_write:
             d_string = str(d[1]) + " " + str(d[3]) + " " + str(d[2]) + " " + str(d[4]) + " " + str(d[6]) + " " + str(d[5])
             detection_file.write(d_string + "\n")
           detection_file.close()

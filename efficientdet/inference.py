@@ -786,29 +786,17 @@ class ServingDriver(object):
       input_fn=predict_input_fn
     )
 
-    detections = []
+    all_detections = []
 
     for pred in predictions:
-      detections.append(pred['dets'])
+      all_detections.append(pred['dets'])
 
-    # Convert from [xmin, ymin, width, height] to [ymin, xmin, ymax, xmax]    
-    # for img_dets in detections:
-    #   for det in img_dets:
-    #     xmin = det[1]
-    #     ymin = det[2]
-    #     width = det[3]
-    #     height = det[4]
-    #     det[1] = ymin
-    #     det[2] = xmin
-    #     det[3] = ymin + height
-    #     det[4] = xmin + width
-
-    assert len(detections) == len(file_paths)
+    assert len(all_detections) == len(file_paths)
     image_size = utils.parse_image_size(params['image_size'])
 
     i = True
-    # Rescale bounding boxes to original image size
-    for img, dets in zip(raw_images, detections):
+    # Rescale bounding boxes to original image size and change height and width to ymax and xmax
+    for img, dets in zip(raw_images, all_detections):
       height, width, _ = np.asarray(img).shape
       height_scale = height / image_size[0]
       width_scale = width / image_size[1]
@@ -821,7 +809,7 @@ class ServingDriver(object):
         det[3] = det[3] * scale
         det[4] = det[4] * scale
 
-    return detections
+    return all_detections
 
   def serve_images(self, image_arrays):
     """Serve a list of image arrays.
