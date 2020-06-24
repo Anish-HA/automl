@@ -20,6 +20,7 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+import functools
 from absl import logging
 import numpy as np
 import tensorflow.compat.v1 as tf
@@ -112,9 +113,22 @@ def decode_box_outputs_tf(rel_codes, anchors):
   return tf.stack([ymin, xmin, ymax, xmax], axis=-1)
 
 
-@tf.autograph.to_graph
-def nms_tf(dets, thresh):
-  """Non-maximum suppression with tf graph mode."""
+def diou_nms(dets, iou_thresh=None):
+  """DIOU non-maximum suppression.
+
+  diou = iou - square of euclidian distance of box centers
+     / square of diagonal of smallest enclosing bounding box
+
+  Reference: https://arxiv.org/pdf/1911.08287.pdf
+
+  Args:
+    dets: detection with shape (num, 5) and format [x1, y1, x2, y2, score].
+    iou_thresh: IOU threshold,
+
+  Returns:
+    numpy.array: Retained boxes.
+  """
+  iou_thresh = iou_thresh or 0.5
   x1 = dets[:, 0]
   y1 = dets[:, 1]
   x2 = dets[:, 2]
@@ -122,33 +136,55 @@ def nms_tf(dets, thresh):
   scores = dets[:, 4]
 
   areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-  order = tf.argsort(scores, direction='DESCENDING')
+  order = scores.argsort()[::-1]
 
-  keep = tf.TensorArray(tf.int32, size=0, dynamic_size=True)
-  index = 0
-  while tf.shape(order)[0] > 0:
+  center_x = (x1 + x2) / 2
+  center_y = (y1 + y2) / 2
+
+  keep = []
+  while order.size > 0:
     i = order[0]
-    keep = keep.write(index, i)
-    xx1 = tf.maximum(x1[i], tf.gather(x1, order[1:]))
-    yy1 = tf.maximum(y1[i], tf.gather(y1, order[1:]))
-    xx2 = tf.minimum(x2[i], tf.gather(x2, order[1:]))
-    yy2 = tf.minimum(y2[i], tf.gather(y2, order[1:]))
+    keep.append(i)
+    xx1 = np.maximum(x1[i], x1[order[1:]])
+    yy1 = np.maximum(y1[i], y1[order[1:]])
+    xx2 = np.minimum(x2[i], x2[order[1:]])
+    yy2 = np.minimum(y2[i], y2[order[1:]])
 
-    w = tf.maximum(0.0, xx2 - xx1 + 1)
-    h = tf.maximum(0.0, yy2 - yy1 + 1)
+    w = np.maximum(0.0, xx2 - xx1 + 1)
+    h = np.maximum(0.0, yy2 - yy1 + 1)
     intersection = w * h
-    overlap = intersection / (
-        areas[i] + tf.gather(areas, order[1:]) - intersection)
+    iou = intersection / (areas[i] + areas[order[1:]] - intersection)
 
-    inds = tf.where_v2(overlap <= thresh)
-    order = tf.concat(tf.gather(order, inds + 1), axis=1)
-    order = tf.squeeze(order, axis=-1)
-    index += 1
-  return keep.stack()
+    smallest_enclosing_box_x1 = np.minimum(x1[i], x1[order[1:]])
+    smallest_enclosing_box_x2 = np.maximum(x2[i], x2[order[1:]])
+    smallest_enclosing_box_y1 = np.minimum(y1[i], y1[order[1:]])
+    smallest_enclosing_box_y2 = np.maximum(y2[i], y2[order[1:]])
+
+    square_of_the_diagonal = (
+        (smallest_enclosing_box_x2 - smallest_enclosing_box_x1)**2 +
+        (smallest_enclosing_box_y2 - smallest_enclosing_box_y1)**2)
+
+    square_of_center_distance = ((center_x[i] - center_x[order[1:]])**2 +
+                                 (center_y[i] - center_y[order[1:]])**2)
+
+    # Add 1e-10 for numerical stability.
+    diou = iou - square_of_center_distance / (square_of_the_diagonal  + 1e-10)
+    inds = np.where(diou <= iou_thresh)[0]
+    order = order[inds + 1]
+  return dets[keep]
 
 
-def nms(dets, thresh):
-  """Non-maximum suppression."""
+def hard_nms(dets, iou_thresh=None):
+  """The basic hard non-maximum suppression.
+
+  Args:
+    dets: detection with shape (num, 5) and format [x1, y1, x2, y2, score].
+    iou_thresh: IOU threshold,
+
+  Returns:
+    numpy.array: Retained boxes.
+  """
+  iou_thresh = iou_thresh or 0.5
   x1 = dets[:, 0]
   y1 = dets[:, 1]
   x2 = dets[:, 2]
@@ -172,9 +208,101 @@ def nms(dets, thresh):
     intersection = w * h
     overlap = intersection / (areas[i] + areas[order[1:]] - intersection)
 
-    inds = np.where(overlap <= thresh)[0]
+    inds = np.where(overlap <= iou_thresh)[0]
     order = order[inds + 1]
-  return keep
+
+  return dets[keep]
+
+
+def soft_nms(dets, nms_configs):
+  """Soft non-maximum suppression.
+
+  [1] Soft-NMS -- Improving Object Detection With One Line of Code.
+    https://arxiv.org/abs/1704.04503
+
+  Args:
+    dets: detection with shape (num, 5) and format [x1, y1, x2, y2, score].
+    nms_configs: a dict config that may contain the following members
+      * method: one of {`linear`, `gaussian`, 'hard'}. Use `gaussian` if None.
+      * iou_thresh (float): IOU threshold, only for `linear`, `hard`.
+      * sigma: Gaussian parameter, only for method 'gaussian'.
+      * score_thresh (float): Box score threshold for final boxes.
+
+  Returns:
+    numpy.array: Retained boxes.
+  """
+  method = nms_configs.get('method', 'gaussian')
+  # Default sigma and iou_thresh are from the original soft-nms paper.
+  sigma = nms_configs.get('sigma', 0.5)
+  iou_thresh = nms_configs.get('iou_thresh', 0.3)
+  score_thresh = nms_configs.get('score_thresh', 0.001)
+
+  x1 = dets[:, 0]
+  y1 = dets[:, 1]
+  x2 = dets[:, 2]
+  y2 = dets[:, 3]
+
+  areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+  # expand dets with areas, and the second dimension is
+  # x1, y1, x2, y2, score, area
+  dets = np.concatenate((dets, areas[:, None]), axis=1)
+
+  retained_box = []
+  while dets.size > 0:
+    max_idx = np.argmax(dets[:, 4], axis=0)
+    dets[[0, max_idx], :] = dets[[max_idx, 0], :]
+    retained_box.append(dets[0, :-1])
+
+    xx1 = np.maximum(dets[0, 0], dets[1:, 0])
+    yy1 = np.maximum(dets[0, 1], dets[1:, 1])
+    xx2 = np.minimum(dets[0, 2], dets[1:, 2])
+    yy2 = np.minimum(dets[0, 3], dets[1:, 3])
+
+    w = np.maximum(xx2 - xx1 + 1, 0.0)
+    h = np.maximum(yy2 - yy1 + 1, 0.0)
+    inter = w * h
+    iou = inter / (dets[0, 5] + dets[1:, 5] - inter)
+
+    if method == 'linear':
+      weight = np.ones_like(iou)
+      weight[iou > iou_thresh] -= iou[iou > iou_thresh]
+    elif method == 'gaussian':
+      weight = np.exp(-(iou * iou) / sigma)
+    else:  # traditional nms
+      weight = np.ones_like(iou)
+      weight[iou > iou_thresh] = 0
+
+    dets[1:, 4] *= weight
+    retained_idx = np.where(dets[1:, 4] >= score_thresh)[0]
+    dets = dets[retained_idx + 1, :]
+
+  return np.vstack(retained_box)
+
+
+def nms(dets, nms_configs):
+  """Non-maximum suppression.
+
+  Args:
+    dets: detection with shape (num, 5) and format [x1, y1, x2, y2, score].
+    nms_configs: a dict config that may contain parameters.
+
+  Returns:
+    numpy.array: Retained boxes.
+  """
+
+  nms_configs = nms_configs or {}
+  method = nms_configs.get('method', None)
+
+  if method == 'hard' or not method:
+    return hard_nms(dets, nms_configs.get('iou_thresh', None))
+
+  if method == 'diou':
+    return diou_nms(dets, nms_configs.get('iou_thresh', None))
+
+  if method in ('linear', 'gaussian'):
+    return soft_nms(dets, nms_configs)
+
+  raise ValueError('Unknown NMS method: {}'.format(method))
 
 
 def _generate_anchor_configs(feat_sizes, min_level, max_level, num_scales,
@@ -264,9 +392,8 @@ def _generate_detections_tf(cls_outputs,
                             image_size,
                             min_score_thresh=MIN_SCORE_THRESH,
                             max_boxes_to_draw=MAX_DETECTIONS_PER_IMAGE,
-                            soft_nms_sigma=0.0,
-                            iou_threshold=0.5,
-                            use_native_nms=True):
+                            soft_nms_sigma=0.25,
+                            iou_threshold=0.5):
   """Generates detections with model outputs and anchors.
 
   Args:
@@ -297,7 +424,6 @@ def _generate_detections_tf(cls_outputs,
         NMS.
     iou_threshold: A float representing the threshold for deciding whether boxes
       overlap too much with respect to IOU.
-    use_native_nms: a bool that indicates whether to use native nms.
 
   Returns:
     detections: detection results in a tensor with each row representing
@@ -312,25 +438,16 @@ def _generate_detections_tf(cls_outputs,
   scores = tf.math.sigmoid(cls_outputs)
   # apply bounding box regression to anchors
   boxes = decode_box_outputs_tf(box_outputs, anchor_boxes)
-
-  if use_native_nms:
-    logging.info('Using native nms.')
-    top_detection_idx, scores = tf.image.non_max_suppression_with_scores(
-        boxes,
-        scores,
-        max_boxes_to_draw,
-        iou_threshold=iou_threshold,
-        score_threshold=min_score_thresh,
-        soft_nms_sigma=soft_nms_sigma)
-    boxes = tf.gather(boxes, top_detection_idx)
-  else:
-    logging.info('Using customized nms.')
-    scores = tf.expand_dims(scores, axis=1)
-    all_detections = tf.concat([boxes, scores], axis=1)
-    top_detection_idx = nms_tf(all_detections, iou_threshold)
-    detections = tf.gather(all_detections, top_detection_idx)
-    scores = detections[:, 4]
-    boxes = detections[:, :4]
+  # TF API is slightly different from paper, here we follow the paper value:
+  # https://github.com/tensorflow/tensorflow/issues/40253.
+  top_detection_idx, scores = tf.image.non_max_suppression_with_scores(
+      boxes,
+      scores,
+      max_boxes_to_draw,
+      iou_threshold=iou_threshold,
+      score_threshold=min_score_thresh,
+      soft_nms_sigma=soft_nms_sigma)
+  boxes = tf.gather(boxes, top_detection_idx)
 
   image_size = utils.parse_image_size(image_size)
   detections = tf.stack([
@@ -347,7 +464,7 @@ def _generate_detections_tf(cls_outputs,
 
 def _generate_detections(cls_outputs, box_outputs, anchor_boxes, indices,
                          classes, image_id, image_scale, num_classes,
-                         max_boxes_to_draw):
+                         max_boxes_to_draw, nms_configs):
   """Generates detections with model outputs and anchors.
 
   Args:
@@ -370,6 +487,7 @@ def _generate_detections(cls_outputs, box_outputs, anchor_boxes, indices,
       evaluating with the original groundtruth annotations.
     num_classes: a integer that indicates the number of classes.
     max_boxes_to_draw: max number of boxes to draw per image.
+    nms_configs: A dict of NMS configs.
 
   Returns:
     detections: detection results in a tensor with each row representing
@@ -393,14 +511,13 @@ def _generate_detections(cls_outputs, box_outputs, anchor_boxes, indices,
     # (nms) for boxes in the same class. The selected boxes from each class are
     # then concatenated for the final detection outputs.
     all_detections_cls = np.column_stack((boxes_cls, scores_cls))
-    top_detection_idx = nms(all_detections_cls, 0.5)
-    top_detections_cls = all_detections_cls[top_detection_idx]
+    top_detections_cls = nms(all_detections_cls, nms_configs)
     top_detections_cls[:, 2] -= top_detections_cls[:, 0]
     top_detections_cls[:, 3] -= top_detections_cls[:, 1]
     top_detections_cls = np.column_stack(
-        (np.repeat(image_id, len(top_detection_idx)),
+        (np.repeat(image_id, len(top_detections_cls)),
          top_detections_cls,
-         np.repeat(c + 1, len(top_detection_idx)))
+         np.repeat(c + 1, len(top_detections_cls)))
     )
     detections.append(top_detections_cls)
 
@@ -429,11 +546,11 @@ def _generate_detections(cls_outputs, box_outputs, anchor_boxes, indices,
 
 
 class Anchors(object):
-  """RetinaNet Anchors class."""
+  """Multi-scale anchors class."""
 
   def __init__(self, min_level, max_level, num_scales, aspect_ratios,
                anchor_scale, image_size):
-    """Constructs multiscale RetinaNet anchors.
+    """Constructs multiscale anchors.
 
     Args:
       min_level: integer number of minimum level of the output feature pyramid.
@@ -566,7 +683,8 @@ class AnchorLabeler(object):
                           image_size=None,
                           min_score_thresh=MIN_SCORE_THRESH,
                           max_boxes_to_draw=MAX_DETECTIONS_PER_IMAGE,
-                          disable_pyfun=None):
+                          disable_pyfun=None,
+                          nms_configs=None):
     """Generate detections based on class and box predictions."""
     if disable_pyfun:
       return _generate_detections_tf(
@@ -581,7 +699,16 @@ class AnchorLabeler(object):
           min_score_thresh=min_score_thresh,
           max_boxes_to_draw=max_boxes_to_draw)
     else:
-      return tf.py_func(_generate_detections, [
-          cls_outputs, box_outputs, self._anchors.boxes, indices, classes,
-          image_id, image_scale, self._num_classes, max_boxes_to_draw,
-      ], tf.float32)
+      logging.info('nms_configs=%s', nms_configs)
+      return tf.py_func(
+          functools.partial(_generate_detections, nms_configs=nms_configs), [
+              cls_outputs,
+              box_outputs,
+              self._anchors.boxes,
+              indices,
+              classes,
+              image_id,
+              image_scale,
+              self._num_classes,
+              max_boxes_to_draw,
+          ], tf.float32)

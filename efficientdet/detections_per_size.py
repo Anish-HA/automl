@@ -1,7 +1,7 @@
 import subprocess
 import os
 
-toplvl_dir = "/home/anish-ha/Documents/obj-det/workspace/dets/models/v1.1_all/data/images/split_by_size"
+toplvl_dir = "/home/anish-ha/Documents/obj-det/workspace/dets/models/v1.1_all/data/images/temp/split_by_size"
 dir_list = next(os.walk(toplvl_dir))[1]
 
 max_infer_dim = 768
@@ -15,7 +15,9 @@ for size in dir_list:
     img_height = img_dims[1]
     max_dim = max(img_height, img_width)
     scale = max_infer_dim / max_dim
-    image_size = str(int(img_height * scale)) + "x" + str(int(img_width * scale))
+    inf_width = 768
+    inf_height = 768
+    image_size = str(int(inf_width)) + "x" + str(int(inf_height))
     print(image_size)
     
     subprocess.check_call([
@@ -26,5 +28,5 @@ for size in dir_list:
         '--hparams=num_classes=9,moving_average_decay=0,image_size=' + image_size + ',label_id_mapping=/home/anish-ha/Documents/obj-det/workspace/dets/models/v1.1_all/data/label_map_9-class.json',
         '--input_image=' + toplvl_dir + '/' + size + '/*.*',
         '--output_image_dir=' + toplvl_dir + '/' + size,
-        '--min_score_thresh=0.4'
+        '--min_score_thresh=0.000001'
     ])

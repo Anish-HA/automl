@@ -28,7 +28,6 @@ import math
 from absl import logging
 import numpy as np
 import tensorflow.compat.v1 as tf
-import tensorflow_probability as tfp
 
 import hparams_config
 
@@ -38,6 +37,11 @@ try:
 except ImportError:
   from tensorflow.contrib import image as image_ops  # pylint: disable=g-import-not-at-top
 
+try:
+  # tensorflow_probability are recommended, but they only support tf2.
+  import tensorflow_probability as tfp  # pylint: disable=g-import-not-at-top
+except ImportError:
+  import tensorflow.distributions as tfp  # pylint: disable=g-import-not-at-top
 
 # This signifies the max integer that the controller RNN could predict for the
 # augmentation scheme.
@@ -1128,8 +1132,9 @@ def sharpness(image, factor):
   # Tile across channel dimension.
   kernel = tf.tile(kernel, [1, 1, 3, 1])
   strides = [1, 1, 1, 1]
-  degenerate = tf.nn.depthwise_conv2d(
-      image, kernel, strides, padding='VALID', rate=[1, 1])
+  with tf.device('/cpu:0'):
+    degenerate = tf.nn.depthwise_conv2d(
+        image, kernel, strides, padding='VALID', rate=[1, 1])
   degenerate = tf.clip_by_value(degenerate, 0.0, 255.0)
   degenerate = tf.squeeze(tf.cast(degenerate, tf.uint8), [0])
 
@@ -1685,7 +1690,6 @@ def distort_image_with_autoaugment(image,
       cutout_bbox_const=50,
       translate_bbox_const=120))
 
-  with tf.device('/cpu:0'):
-    return build_and_apply_nas_policy(policy, image, bboxes,
-                                      augmentation_hparams, use_augmix,
-                                      mixture_width, mixture_depth, alpha)
+  return build_and_apply_nas_policy(policy, image, bboxes,
+                                    augmentation_hparams, use_augmix,
+                                    mixture_width, mixture_depth, alpha)

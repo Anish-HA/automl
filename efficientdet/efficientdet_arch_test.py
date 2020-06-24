@@ -123,7 +123,6 @@ class EfficientDetArchPrecisionTest(tf.test.TestCase):
           inputs,
           model_name='efficientdet-d0',
           is_training_bn=is_training,
-          precision=precision,
           image_size=512)
 
     return utils.build_model_with_precision(precision, _model_fn, features,
@@ -190,9 +189,20 @@ class BiFPNTest(tf.test.TestCase):
 
   def test_bifpn_dynamic_l3l7(self):
     p1 = efficientdet_arch.bifpn_dynamic_config(3, 7, None)
-    p2 = efficientdet_arch.bifpn_fa_config()
-    self.assertEqual(p1.weight_method, p2.weight_method)
-    self.assertEqual(p1.nodes, p2.nodes)
+    # pyformat: disable
+    self.assertEqual(
+        p1.nodes,
+        [
+            {'feat_level': 6, 'inputs_offsets': [3, 4]},
+            {'feat_level': 5, 'inputs_offsets': [2, 5]},
+            {'feat_level': 4, 'inputs_offsets': [1, 6]},
+            {'feat_level': 3, 'inputs_offsets': [0, 7]},
+            {'feat_level': 4, 'inputs_offsets': [1, 7, 8]},
+            {'feat_level': 5, 'inputs_offsets': [2, 6, 9]},
+            {'feat_level': 6, 'inputs_offsets': [3, 5, 10]},
+            {'feat_level': 7, 'inputs_offsets': [4, 11]},
+        ])
+    # pyformat: enable
 
   def test_bifpn_dynamic_l2l7(self):
     p = efficientdet_arch.bifpn_dynamic_config(2, 7, None)

@@ -162,14 +162,16 @@ def build_model(model_name: Text, inputs: tf.Tensor, **kwargs):
     Each is a dictionary with key as feature level and value as predictions.
   """
   model_arch = det_model_fn.get_model_arch(model_name)
+  mixed_precision = kwargs.get('mixed_precision', None)
+  precision = utils.get_precision(kwargs.get('strategy', None), mixed_precision)
   cls_outputs, box_outputs = utils.build_model_with_precision(
-      kwargs.get('precision', None), model_arch, inputs, False, model_name,
-      **kwargs)
-  if kwargs.get('precision', None):
+      precision, model_arch, inputs, False, model_name, **kwargs)
+  if mixed_precision:
     # Post-processing has multiple places with hard-coded float32.
     # TODO(tanmingxing): Remove them once post-process can adpat to dtypes.
     cls_outputs = {k: tf.cast(v, tf.float32) for k, v in cls_outputs.items()}
     box_outputs = {k: tf.cast(v, tf.float32) for k, v in box_outputs.items()}
+
   return cls_outputs, box_outputs
 
 
@@ -527,7 +529,8 @@ class ServingDriver(object):
     self.disable_pyfun = True
     self.use_xla = use_xla
 
-    self.min_score_thresh = min_score_thresh or anchors.MIN_SCORE_THRESH
+    self.min_score_thresh = (min_score_thresh if min_score_thresh is not None
+                             else anchors.MIN_SCORE_THRESH)
     self.max_boxes_to_draw = (
         max_boxes_to_draw or anchors.MAX_DETECTIONS_PER_IMAGE)
     self.line_thickness = line_thickness
@@ -670,7 +673,6 @@ class ServingDriver(object):
       cls_outputs, box_outputs = utils.build_model_with_precision(
         params['precision'], _model_outputs, features, params['is_training_bn'])
 
-
       levels = cls_outputs.keys()
       for level in levels:
         cls_outputs[level] = tf.cast(cls_outputs[level], tf.float32)
@@ -769,6 +771,7 @@ class ServingDriver(object):
         input_processor.normalize_image()
         input_processor.set_scale_factors_to_output_size()
         image = input_processor.resize_and_crop_image()
+        # image = input_processor.normalize_image(image)
 
         return image
 
@@ -787,10 +790,18 @@ class ServingDriver(object):
     )
 
     all_detections = []
-
+    preds = []
+    
     for pred in predictions:
       all_detections.append(pred['dets'])
-
+      preds.append(pred)
+      
+    save_dir = "/home/anish-ha/Documents/obj-det/workspace/dets/models/v1.1_all/data/images/temp/split_by_size/"
+    
+    # for path, pred in zip(file_paths, preds):
+      # name = os.path.splitext(os.path.basename(path))[0]
+      # np.save(save_dir + name + ".npy", pred)
+      
     assert len(all_detections) == len(file_paths)
     image_size = utils.parse_image_size(params['image_size'])
 
@@ -983,7 +994,6 @@ class InferenceDriver(object):
           self.ckpt_path,
           ema_decay=self.params['moving_average_decay'],
           export_ckpt=None)
-
       # for postprocessing.
       params.update(
           dict(batch_size=len(raw_images), disable_pyfun=self.disable_pyfun))

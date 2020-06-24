@@ -48,10 +48,14 @@ class InputProcessor(object):
     self._crop_offset_y = tf.constant(0)
     self._crop_offset_x = tf.constant(0)
 
-  def normalize_image(self):
+  def normalize_image(self, image=None):
     """Normalize the image to zero mean and unit variance."""
     # The image normalization is identical to Cloud TPU ResNet.
+    # if image is None:
     self._image = tf.image.convert_image_dtype(self._image, dtype=tf.float32)
+    # else:
+      # self._image = tf.image.convert_image_dtype(image, dtype=tf.float32)
+
     offset = tf.constant([0.485, 0.456, 0.406])
     offset = tf.expand_dims(offset, axis=0)
     offset = tf.expand_dims(offset, axis=0)
@@ -61,6 +65,8 @@ class InputProcessor(object):
     scale = tf.expand_dims(scale, axis=0)
     scale = tf.expand_dims(scale, axis=0)
     self._image /= scale
+
+    # return self._image
 
   def set_training_random_scale_factors(self,
                                         scale_min,
@@ -93,6 +99,7 @@ class InputProcessor(object):
     image_scale_y = tf.cast(scaled_y, tf.float32) / height
     image_scale_x = tf.cast(scaled_x, tf.float32) / width
     image_scale = tf.minimum(image_scale_x, image_scale_y)
+    # image_scale = random_scale_factor
 
     # Select non-zero random offset (x, y) if scaled image is larger than
     # self._output_size.
